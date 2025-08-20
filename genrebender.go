@@ -8,8 +8,12 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
+
+	"github.com/go-flac/flacvorbis/v2"
+	"github.com/go-flac/go-flac/v2"
 )
 
 const base = "https://musicbrainz.org/ws/2"
@@ -210,14 +214,50 @@ func pickTags(ts []Tag) []string {
 	return out
 }
 
+func extractFLACComments(filename string) (*flacvorbis.MetaDataBlockVorbisComment, int) {
+	f, err := flac.ParseFile(filename)
+	if err != nil {
+		panic(err)
+	}
+
+	var cmt *flacvorbis.MetaDataBlockVorbisComment
+	var cmtIdx int
+
+	for idx, meta := range f.Meta {
+		if meta.Type == flac.VorbisComment {
+			cmt, err = flacvorbis.ParseFromMetaDataBlock(*meta)
+			cmtIdx = idx
+			if err != nil {
+				panic(err)
+			}
+		}
+	}
+	return cmt, cmtIdx
+}
+
 func main() {
 	fmt.Println("Yay! GenreBender")
+	// args := os.Args[1:]
+	filename := os.Args[1]
+
+	vb, _ := extractFLACComments(filename)
+	// vb, _ := extractFLACComments("./goreshit - tomboyish love for daughter - 05 strawberry cheesecake.flac")
+
+	// fmt.Println(vb.Comments, "count:", count)
+	title, _ := vb.Get(flacvorbis.FIELD_TITLE)
+	album, _ := vb.Get(flacvorbis.FIELD_ALBUM)
+	artist, _ := vb.Get(flacvorbis.FIELD_ARTIST)
+
+	fmt.Println("Title:", title[0])
+	fmt.Println("Album:", album[0])
+	fmt.Println("Artist:", artist[0])
 
 	client := NewClient()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	recMBID, _ := client.SearchRecordingMBID(ctx, "goreshit", "crabs", "tomboyish love for daughter", 0)
+	// recMBID, _ := client.SearchRecordingMBID(ctx, "goreshit", "crabs", "tomboyish love for daughter", 0)
+	recMBID, _ := client.SearchRecordingMBID(ctx, artist[0], title[0], album[0], 0)
 
 	//genres, tags, err := client.ReleaseGroupGenres(ctx, "ba03bce9-9f91-42ce-9f12-519dae3f734b")
 	genres, tags, err := client.RecordingGenres(ctx, recMBID)
