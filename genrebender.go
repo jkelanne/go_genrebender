@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -118,10 +120,13 @@ func (c *Client) RecordingGenres(ctx context.Context, recMBID string) (genres []
 func (c *Client) ReleaseGroupGenres(ctx context.Context, rgMBID string) (genres []string, tags []string, _ error) {
 	var r releaseGroupResp
 	err := c.getJSON(ctx, fmt.Sprintf("%s/release-group/%s?inc=genres+tags&fmt=json", base, rgMBID), &r)
+	fmt.Printf("%s/release-group/%s?inc=genres+tags&fmt=json\n", base, rgMBID)
 	if err != nil {
 		return nil, nil, err
 	}
 
+	fmt.Println("genres:", r.Genres)
+	fmt.Println("Tags:", r.Tags)
 	return pickGenres(r.Genres), pickTags(r.Tags), nil
 }
 
@@ -145,14 +150,41 @@ func (c *Client) SearchRecordingMBID(ctx context.Context, artist, title, album s
 		return "", nil
 	}
 
-	for _, rc := range out.Recordings {
-		if rc.Score == 100 {
-			return rc.ID, nil
-		}
-		println("ID:", rc.ID, "score:", rc.Score, "title:", rc.Title)
+	// for _, rc := range out.Recordings {
+	// 	if rc.Score == 100 {
+	// 		return rc.ID, nil
+	// 	}
+	// 	println("ID:", rc.ID, "score:", rc.Score, "title:", rc.Title)
+	// }
+	best := pickBestRecording(out.Recordings, artist, title, album, durationMS)
+	return best, nil
+}
+
+func (c *Client) SearchReleaseGroupMBID(ctx context.Context, artist, album string) (string, error) {
+	q := luceneAnd(
+		field("artist", artist),
+		field("releasegroup", album),
+	)
+	u := fmt.Sprintf("%s/release-group?query=%s&limit=5&fmt=json", base, url.QueryEscape(q))
+
+	var out struct {
+		ReleaseGroups []releaseGroup `json:"release-groups"`
 	}
 
-	return "", nil
+	if err := c.getJSON(ctx, u, &out); err != nil {
+		fmt.Println("GetJSON failed")
+		return "", err
+
+	}
+
+	if len(out.ReleaseGroups) == 0 {
+		fmt.Println("out.ReleaseGroups size is 0")
+		return "", nil
+	}
+
+	fmt.Println(out.ReleaseGroups)
+	best := pickBestReleaseGroup(out.ReleaseGroups, artist, album)
+	return best, nil
 }
 
 func optionalField(k, v string) string {
@@ -166,8 +198,19 @@ func escapeQuotes(s string) string {
 	return strings.ReplaceAll(s, `"`, `\"`)
 }
 
+func escapeLucene(s string) string {
+	// escape Lucene special chars
+	specials := []string{"+", "-", "&&", "||", "!", "(", ")", "{", "}", "[", "]",
+		"^", "\"", "~", "*", "?", ":", "\\", "/"}
+	for _, ch := range specials {
+		s = strings.ReplaceAll(s, ch, `\`+ch)
+	}
+	return s
+}
+
 func field(k, v string) string {
-	return fmt.Sprintf(`%s:%s`, k, escapeQuotes(v))
+	// return fmt.Sprintf(`%s:"%s"`, k, escapeQuotes(v))
+	return fmt.Sprintf(`%s:"%s"`, k, escapeLucene(v))
 }
 
 func luceneAnd(parts ...string) string {
@@ -214,11 +257,128 @@ func pickTags(ts []Tag) []string {
 	return out
 }
 
+func pickBestRecording(cands []recording, artist, title, album string, durMS int) string {
+	type scored struct {
+		id    string
+		score int
+	}
+
+	artist = strings.ToLower(artist)
+	title = strings.ToLower(title)
+	album = strings.ToLower(album)
+
+	items := make([]scored, 0, len(cands))
+	for _, rc := range cands {
+		s := rc.Score
+		if ciContains(rc.Title, title) {
+			s += 5
+		}
+		if hasArtist(rc.AC, artist) {
+			s += 5
+		}
+		if album != "" && hasReleaseTitle(rc.Rels, album) {
+			s += 4
+		}
+
+		if durMS > 0 && rc.Length > 0 {
+			diff := abs(rc.Length - durMS)
+			switch {
+			case diff <= 1500:
+				s += 6
+			case diff <= 3000:
+				s += 3
+			case diff <= 7000:
+				s += 1
+			}
+		}
+		items = append(items, scored{rc.ID, s})
+	}
+
+	sort.Slice(items, func(i, j int) bool { return items[i].score > items[j].score })
+	if len(items) == 0 {
+		return ""
+	}
+	return items[0].id
+}
+
+func pickBestReleaseGroup(cands []releaseGroup, artist, album string) string {
+	type scored struct {
+		id    string
+		title string
+		score int
+	}
+
+	artist = strings.ToLower(artist)
+	album = strings.ToLower(album)
+
+	items := make([]scored, 0, len(cands))
+	for _, rg := range cands {
+		fmt.Println(rg)
+		s := rg.Score
+		if ciContains(rg.Title, album) {
+			s += 5
+		}
+		if hasArtist(rg.AC, artist) {
+			s += 5
+		}
+		if yr := year(rg.First); yr > 0 && yr >= 1950 && yr <= time.Now().Year()+1 {
+			s += 1
+		}
+		items = append(items, scored{rg.ID, rg.Title, s})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].score > items[j].score })
+	if len(items) == 0 {
+		return ""
+	}
+	return items[0].id
+}
+
+func ciContains(s, sub string) bool {
+	return strings.Contains(strings.ToLower(s), strings.ToLower(sub))
+}
+
+func hasArtist(ac []artistCred, want string) bool {
+	want = strings.ToLower(want)
+	for _, a := range ac {
+		if strings.Contains(strings.ToLower(a.Name), want) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasReleaseTitle(rs []relRelease, want string) bool {
+	want = strings.ToLower(want)
+	for _, r := range rs {
+		if strings.Contains(strings.ToLower(r.Title), want) {
+			return true
+		}
+	}
+	return false
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
+}
+
+func year(s string) int {
+	if len(s) >= 4 {
+		if y, err := strconv.Atoi(s[:4]); err == nil {
+			return y
+		}
+	}
+	return 0
+}
+
 func extractFLACComments(filename string) (*flacvorbis.MetaDataBlockVorbisComment, int) {
 	f, err := flac.ParseFile(filename)
 	if err != nil {
 		panic(err)
 	}
+	defer f.Close()
 
 	var cmt *flacvorbis.MetaDataBlockVorbisComment
 	var cmtIdx int
@@ -233,6 +393,37 @@ func extractFLACComments(filename string) (*flacvorbis.MetaDataBlockVorbisCommen
 		}
 	}
 	return cmt, cmtIdx
+}
+
+func addFLACGenreComment(filename string, genres []string) {
+	f, err := flac.ParseFile(filename)
+	if err != nil {
+		panic(err)
+	}
+	defer f.Close()
+	cmts, idx := extractFLACComments(filename)
+	if cmts == nil && idx > 0 {
+		cmts = flacvorbis.New()
+	}
+
+	// cmts.Add(flacvorbis.FIELD_GENRE, genre)
+	for _, g := range genres {
+		g = strings.TrimSpace(g)
+		if g == "" {
+			continue
+		}
+		if err := cmts.Add(flacvorbis.FIELD_GENRE, g); err != nil {
+			fmt.Printf("Something went wrong: %v", err)
+			return
+		}
+	}
+	cmtsmeta := cmts.Marshal()
+	if idx > 0 {
+		f.Meta[idx] = &cmtsmeta
+	} else {
+		f.Meta = append(f.Meta, &cmtsmeta)
+	}
+	f.Save("cached.flac")
 }
 
 func main() {
@@ -264,6 +455,17 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// NOTE: If genre is empty try to get them from the ReleaseGroup
+	if len(genres) == 0 {
+		relGrpMBID, _ := client.SearchReleaseGroupMBID(ctx, artist[0], album[0])
+		fmt.Println("Release-Group MBID:", relGrpMBID)
+		genres, tags, err = client.ReleaseGroupGenres(ctx, relGrpMBID)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
 	fmt.Println("Genres:", genres)
 	fmt.Println("Tags:", tags)
+	addFLACGenreComment(filename, genres)
 }
