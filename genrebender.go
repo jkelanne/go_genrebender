@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io/fs"
+
 	// "errors"
 	"fmt"
 	"io"
@@ -122,13 +124,13 @@ func (c *Client) RecordingGenres(ctx context.Context, recMBID string) (genres []
 func (c *Client) ReleaseGroupGenres(ctx context.Context, rgMBID string) (genres []string, tags []string, _ error) {
 	var r releaseGroupResp
 	err := c.getJSON(ctx, fmt.Sprintf("%s/release-group/%s?inc=genres+tags&fmt=json", base, rgMBID), &r)
-	fmt.Printf("%s/release-group/%s?inc=genres+tags&fmt=json\n", base, rgMBID)
+	// fmt.Printf("%s/release-group/%s?inc=genres+tags&fmt=json\n", base, rgMBID)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	fmt.Println("genres:", r.Genres)
-	fmt.Println("Tags:", r.Tags)
+	// fmt.Println("genres:", r.Genres)
+	// fmt.Println("Tags:", r.Tags)
 	return pickGenres(r.Genres), pickTags(r.Tags), nil
 }
 
@@ -184,7 +186,7 @@ func (c *Client) SearchReleaseGroupMBID(ctx context.Context, artist, album strin
 		return "", nil
 	}
 
-	fmt.Println(out.ReleaseGroups)
+	// fmt.Println(out.ReleaseGroups)
 	best := pickBestReleaseGroup(out.ReleaseGroups, artist, album)
 	return best, nil
 }
@@ -315,7 +317,7 @@ func pickBestReleaseGroup(cands []releaseGroup, artist, album string) string {
 
 	items := make([]scored, 0, len(cands))
 	for _, rg := range cands {
-		fmt.Println(rg)
+		// fmt.Println(rg)
 		s := rg.Score
 		if ciContains(rg.Title, album) {
 			s += 5
@@ -427,97 +429,153 @@ func addFLACGenreComment(filename string, genres []string) {
 	}
 	f.Save("cached.flac")
 }
+func getGenres(filename string, verbose bool) (genres, tags []string, err error) {
+	vb, _ := extractFLACComments(filename)
+
+	title, _ := vb.Get(flacvorbis.FIELD_TITLE)
+	album, _ := vb.Get(flacvorbis.FIELD_ALBUM)
+	artist, _ := vb.Get(flacvorbis.FIELD_ARTIST)
+
+	if verbose {
+		fmt.Println("Title:", title[0])
+		fmt.Println("Album:", album[0])
+		fmt.Println("Artist:", artist[0])
+	}
+
+	client := NewClient()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// recMBID, _ := client.SearchRecordingMBID(ctx, "goreshit", "crabs", "tomboyish love for daughter", 0)
+	// TODO: We should normalise these variables somehow. no need to have arrays here..
+	recMBID, _ := client.SearchRecordingMBID(ctx, artist[0], title[0], album[0], 0)
+
+	//genres, tags, err := client.ReleaseGroupGenres(ctx, "ba03bce9-9f91-42ce-9f12-519dae3f734b")
+	genres, tags, err = client.RecordingGenres(ctx, recMBID)
+	if err != nil {
+		// log.Fatal(err)
+		return nil, nil, err
+	}
+	// NOTE: If genre is empty try to get them from the ReleaseGroup
+	if len(genres) == 0 {
+		relGrpMBID, _ := client.SearchReleaseGroupMBID(ctx, artist[0], album[0])
+		if verbose {
+			fmt.Println("Release-Group MBID:", relGrpMBID)
+		}
+		genres, tags, err = client.ReleaseGroupGenres(ctx, relGrpMBID)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	// fmt.Println("Genres:", genres)
+	// fmt.Println("Tags:", tags)
+
+	// NOTE: This should be in the ADD command..
+	// if !c.Bool("check-only") != true {
+	// 	addFLACGenreComment(filename, genres)
+	// }
+	return genres, tags, nil
+}
 
 func main() {
 	// Check this for full example:
 	//    https://github.com/urfave/cli/blob/main/docs/v3/examples/full-api-example.md
 	var filename string
 	cmd := &cli.Command{
-		Name:    "GenreBender",
-		Version: "v0.0.1",
-		// Authors: []any {
-		// 	&cli.Author {
-		// 		Name: "Jukka Kelanne",
-		// 		Email: "jukka.kelanne@gmail.com",
-		// 	},
-		// },
+		Name:      "GenreBender",
+		Version:   "v0.0.1",
 		Usage:     "Just testing some things",
 		UsageText: "What is this used for?",
-		// Commands: []*cli.Command {
-		//
-		// },
-		Flags: []cli.Flag{
-			&cli.BoolFlag{Name: "verbose", Aliases: []string{"V"}},
-			&cli.BoolFlag{Name: "check-only", Aliases: []string{"c"}},
-		},
-		Arguments: []cli.Argument{
-			&cli.StringArg{
-				Name:        "filename",
-				Destination: &filename,
+		Commands: []*cli.Command{
+			{
+				Name:    "add",
+				Aliases: []string{"a"},
+				Usage:   "add genres to file (WIP)",
+				Arguments: []cli.Argument{
+					&cli.StringArg{
+						Name:        "filename",
+						Destination: &filename,
+					},
+				},
+				Action: func(ctx context.Context, c *cli.Command) error {
+					// fmt.Println("Adding genres to file:", filename)
+					info, err := os.Stat(filename)
+					if err != nil {
+						fmt.Println(err)
+						return nil
+					}
+
+					if info.IsDir() {
+						fmt.Printf("[%s] is a directory\n", filename)
+					} else {
+						fmt.Printf("[%s] is a file\n", filename)
+					}
+					return nil
+				},
 			},
-		},
-		OnUsageError: func(ctx context.Context, cmd *cli.Command, err error, isSubcommand bool) error {
-			if isSubcommand {
-				return err
-			}
-			fmt.Fprintf(cmd.Root().Writer, "WRONG: %#v\n", err)
-			return nil
-		},
-		Action: func(ctx context.Context, cmd *cli.Command) error {
-			if cmd.Bool("verbose") {
-				fmt.Println("GenreBender!")
-			}
+			{
+				Name:    "check",
+				Aliases: []string{"c"},
+				Usage:   "check genres (WIP)",
+				Arguments: []cli.Argument{
+					&cli.StringArg{
+						Name:        "filename",
+						Destination: &filename,
+					},
+				},
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "verbose", Aliases: []string{"V"}},
+					// &cli.BoolFlag{Name: "check-only", Aliases: []string{"c"}},
+				},
+				Action: func(ctx context.Context, c *cli.Command) error {
+					if c.Bool("verbose") {
+						fmt.Println("Checking genres...", filename)
+					}
 
-			if filename == "" {
-				// This will do for now, but we should invoke a usage error here, but don't know how.
-				return fmt.Errorf("Missing file")
-				// return errors.New("Missing filename!!!!!")
-			}
-			vb, _ := extractFLACComments(filename)
+					if filename == "" {
+						// This will do for now, but we should invoke a usage error here, but don't know how.
+						return fmt.Errorf("Missing file")
+					}
 
-			title, _ := vb.Get(flacvorbis.FIELD_TITLE)
-			album, _ := vb.Get(flacvorbis.FIELD_ALBUM)
-			artist, _ := vb.Get(flacvorbis.FIELD_ARTIST)
+					info, err := os.Stat(filename)
+					if err != nil {
+						fmt.Println(err)
+						return nil
+					}
 
-			if cmd.Bool("verbose") {
-				fmt.Println("Title:", title[0])
-				fmt.Println("Album:", album[0])
-				fmt.Println("Artist:", artist[0])
-			}
+					if info.IsDir() {
+						root := os.DirFS(filename)
+						flacFiles, err := fs.Glob(root, "*.flac")
+						if err != nil {
+							fmt.Println(err)
+							return nil
+						}
 
-			client := NewClient()
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+						// var files []string
+						for _, v := range flacFiles {
+							// fmt.Println(v)
+							genres, _, err := getGenres(fmt.Sprintf("%s/%s", filename, v), c.Bool("verbose"))
+							if err != nil {
+								log.Fatal(err)
+							}
+							fmt.Printf("[%s] :: %s\n", v, strings.Join(genres, ","))
+							time.Sleep(2 * time.Second)
 
-			// recMBID, _ := client.SearchRecordingMBID(ctx, "goreshit", "crabs", "tomboyish love for daughter", 0)
-			// TODO: We should normalise these variables somehow. no need to have arrays here..
-			recMBID, _ := client.SearchRecordingMBID(ctx, artist[0], title[0], album[0], 0)
+						}
+						return nil
+					} else {
+						genres, tags, err := getGenres(filename, c.Bool("verbose"))
+						if err != nil {
+							log.Fatal(err)
+						}
+						fmt.Printf("genres: %s\n", strings.Join(genres, ","))
+						fmt.Printf("tags: %s\n", strings.Join(tags, ","))
+					}
 
-			//genres, tags, err := client.ReleaseGroupGenres(ctx, "ba03bce9-9f91-42ce-9f12-519dae3f734b")
-			genres, tags, err := client.RecordingGenres(ctx, recMBID)
-			if err != nil {
-				log.Fatal(err)
-			}
-			// NOTE: If genre is empty try to get them from the ReleaseGroup
-			if len(genres) == 0 {
-				relGrpMBID, _ := client.SearchReleaseGroupMBID(ctx, artist[0], album[0])
-				if !cmd.Bool("verbose") {
-					fmt.Println("Release-Group MBID:", relGrpMBID)
-				}
-				genres, tags, err = client.ReleaseGroupGenres(ctx, relGrpMBID)
-				if err != nil {
-					log.Fatal(err)
-				}
-			}
-
-			fmt.Println("Genres:", genres)
-			fmt.Println("Tags:", tags)
-
-			if !cmd.Bool("check-only") != true {
-				addFLACGenreComment(filename, genres)
-			}
-
-			return nil
+					return nil
+				},
+			},
 		},
 	}
 
