@@ -16,6 +16,7 @@ import (
 
 	"github.com/go-flac/flacvorbis/v2"
 	"github.com/go-flac/go-flac/v2"
+	"github.com/urfave/cli/v3"
 )
 
 const base = "https://musicbrainz.org/ws/2"
@@ -427,45 +428,89 @@ func addFLACGenreComment(filename string, genres []string) {
 }
 
 func main() {
-	fmt.Println("Yay! GenreBender")
-	// args := os.Args[1:]
-	filename := os.Args[1]
+	// Check this for full example:
+	//    https://github.com/urfave/cli/blob/main/docs/v3/examples/full-api-example.md
+	var filename string
+	cmd := &cli.Command{
+		Name:    "GenreBender",
+		Version: "v0.0.1",
+		// Authors: []any {
+		// 	&cli.Author {
+		// 		Name: "Jukka Kelanne",
+		// 		Email: "jukka.kelanne@gmail.com",
+		// 	},
+		// },
+		Usage:     "Just testing some things",
+		UsageText: "What is this used for?",
+		// Commands: []*cli.Command {
+		//
+		// },
+		Flags: []cli.Flag{
+			&cli.BoolFlag{Name: "verbose", Aliases: []string{"V"}},
+			&cli.BoolFlag{Name: "check-only", Aliases: []string{"c"}},
+		},
+		Arguments: []cli.Argument{
+			&cli.StringArg{
+				Name:        "filename",
+				Destination: &filename,
+			},
+		},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			fmt.Println("GenreBender!")
+			// filename := os.Args[1]
+			if filename == "" {
+				log.Fatal("Missing file!")
+			}
+			vb, _ := extractFLACComments(filename)
+			// vb, _ := extractFLACComments("./goreshit - tomboyish love for daughter - 05 strawberry cheesecake.flac")
 
-	vb, _ := extractFLACComments(filename)
-	// vb, _ := extractFLACComments("./goreshit - tomboyish love for daughter - 05 strawberry cheesecake.flac")
+			// fmt.Println(vb.Comments, "count:", count)
+			title, _ := vb.Get(flacvorbis.FIELD_TITLE)
+			album, _ := vb.Get(flacvorbis.FIELD_ALBUM)
+			artist, _ := vb.Get(flacvorbis.FIELD_ARTIST)
 
-	// fmt.Println(vb.Comments, "count:", count)
-	title, _ := vb.Get(flacvorbis.FIELD_TITLE)
-	album, _ := vb.Get(flacvorbis.FIELD_ALBUM)
-	artist, _ := vb.Get(flacvorbis.FIELD_ARTIST)
+			if !cmd.Bool("verbose") {
+				fmt.Println("Title:", title[0])
+				fmt.Println("Album:", album[0])
+				fmt.Println("Artist:", artist[0])
+			}
 
-	fmt.Println("Title:", title[0])
-	fmt.Println("Album:", album[0])
-	fmt.Println("Artist:", artist[0])
+			client := NewClient()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
 
-	client := NewClient()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+			// recMBID, _ := client.SearchRecordingMBID(ctx, "goreshit", "crabs", "tomboyish love for daughter", 0)
+			recMBID, _ := client.SearchRecordingMBID(ctx, artist[0], title[0], album[0], 0)
 
-	// recMBID, _ := client.SearchRecordingMBID(ctx, "goreshit", "crabs", "tomboyish love for daughter", 0)
-	recMBID, _ := client.SearchRecordingMBID(ctx, artist[0], title[0], album[0], 0)
+			//genres, tags, err := client.ReleaseGroupGenres(ctx, "ba03bce9-9f91-42ce-9f12-519dae3f734b")
+			genres, tags, err := client.RecordingGenres(ctx, recMBID)
+			if err != nil {
+				log.Fatal(err)
+			}
+			// NOTE: If genre is empty try to get them from the ReleaseGroup
+			if len(genres) == 0 {
+				relGrpMBID, _ := client.SearchReleaseGroupMBID(ctx, artist[0], album[0])
+				if !cmd.Bool("verbose") {
+					fmt.Println("Release-Group MBID:", relGrpMBID)
+				}
+				genres, tags, err = client.ReleaseGroupGenres(ctx, relGrpMBID)
+				if err != nil {
+					log.Fatal(err)
+				}
+			}
 
-	//genres, tags, err := client.ReleaseGroupGenres(ctx, "ba03bce9-9f91-42ce-9f12-519dae3f734b")
-	genres, tags, err := client.RecordingGenres(ctx, recMBID)
-	if err != nil {
+			fmt.Println("Genres:", genres)
+			fmt.Println("Tags:", tags)
+
+			if !cmd.Bool("check-only") != true {
+				addFLACGenreComment(filename, genres)
+			}
+
+			return nil
+		},
+	}
+	// _ = (&cli.Command{}).Run(context.Background(), os.Args)
+	if err := cmd.Run(context.Background(), os.Args); err != nil {
 		log.Fatal(err)
 	}
-	// NOTE: If genre is empty try to get them from the ReleaseGroup
-	if len(genres) == 0 {
-		relGrpMBID, _ := client.SearchReleaseGroupMBID(ctx, artist[0], album[0])
-		fmt.Println("Release-Group MBID:", relGrpMBID)
-		genres, tags, err = client.ReleaseGroupGenres(ctx, relGrpMBID)
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
-
-	fmt.Println("Genres:", genres)
-	fmt.Println("Tags:", tags)
-	addFLACGenreComment(filename, genres)
 }
