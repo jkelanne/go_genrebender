@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	// "errors"
 	"fmt"
 	"io"
 	"log"
@@ -455,21 +456,30 @@ func main() {
 				Destination: &filename,
 			},
 		},
+		OnUsageError: func(ctx context.Context, cmd *cli.Command, err error, isSubcommand bool) error {
+			if isSubcommand {
+				return err
+			}
+			fmt.Fprintf(cmd.Root().Writer, "WRONG: %#v\n", err)
+			return nil
+		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			fmt.Println("GenreBender!")
-			// filename := os.Args[1]
+			if cmd.Bool("verbose") {
+				fmt.Println("GenreBender!")
+			}
+
 			if filename == "" {
-				log.Fatal("Missing file!")
+				// This will do for now, but we should invoke a usage error here, but don't know how.
+				return fmt.Errorf("Missing file")
+				// return errors.New("Missing filename!!!!!")
 			}
 			vb, _ := extractFLACComments(filename)
-			// vb, _ := extractFLACComments("./goreshit - tomboyish love for daughter - 05 strawberry cheesecake.flac")
 
-			// fmt.Println(vb.Comments, "count:", count)
 			title, _ := vb.Get(flacvorbis.FIELD_TITLE)
 			album, _ := vb.Get(flacvorbis.FIELD_ALBUM)
 			artist, _ := vb.Get(flacvorbis.FIELD_ARTIST)
 
-			if !cmd.Bool("verbose") {
+			if cmd.Bool("verbose") {
 				fmt.Println("Title:", title[0])
 				fmt.Println("Album:", album[0])
 				fmt.Println("Artist:", artist[0])
@@ -480,6 +490,7 @@ func main() {
 			defer cancel()
 
 			// recMBID, _ := client.SearchRecordingMBID(ctx, "goreshit", "crabs", "tomboyish love for daughter", 0)
+			// TODO: We should normalise these variables somehow. no need to have arrays here..
 			recMBID, _ := client.SearchRecordingMBID(ctx, artist[0], title[0], album[0], 0)
 
 			//genres, tags, err := client.ReleaseGroupGenres(ctx, "ba03bce9-9f91-42ce-9f12-519dae3f734b")
@@ -509,7 +520,7 @@ func main() {
 			return nil
 		},
 	}
-	// _ = (&cli.Command{}).Run(context.Background(), os.Args)
+
 	if err := cmd.Run(context.Background(), os.Args); err != nil {
 		log.Fatal(err)
 	}
