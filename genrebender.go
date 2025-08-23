@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"io/fs"
 
@@ -529,6 +531,17 @@ func main() {
 					// &cli.BoolFlag{Name: "check-only", Aliases: []string{"c"}},
 				},
 				Action: func(ctx context.Context, c *cli.Command) error {
+					cache_path, err := os.UserCacheDir()
+					if err != nil {
+						log.Fatal("Not sure what happened, %w", err)
+					}
+					cache_path = fmt.Sprintf("%s/genrebender/", cache_path)
+
+					// NOTE: Testing caching
+					sum := sha1.Sum([]byte(strings.TrimSpace(filename)))
+					fmt.Printf("SHA1: [%s] => %s%s.json\n", filename, cache_path, hex.EncodeToString(sum[:]))
+					// cacheDir, _ := os.UserCacheDir()
+					// fmt.Println("user cache_dir:", cacheDir)
 					if c.Bool("verbose") {
 						fmt.Println("Checking genres...", filename)
 					}
