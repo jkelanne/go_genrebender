@@ -432,6 +432,20 @@ func addFLACGenreComment(filename string, genres []string) {
 	f.Save("cached.flac")
 }
 func getGenres(filename string, verbose bool) (genres, tags []string, err error) {
+	// TODO: Move these somewhere else and pass the *Disk* object around.. or reference to it
+	cache_path, err := os.UserCacheDir()
+	if err != nil {
+		log.Fatal("Not sure what happened, %w", err)
+	}
+
+	cache_path = fmt.Sprintf("%s/genrebender/", cache_path)
+	cache := Disk{
+		Dir:        cache_path,
+		TTL:        30 * 24 * time.Hour,
+		SearchTTL:  7 * 24 * time.Hour,
+		APIVersion: 1,
+	}
+
 	vb, _ := extractFLACComments(filename)
 
 	title, _ := vb.Get(flacvorbis.FIELD_TITLE)
@@ -451,6 +465,11 @@ func getGenres(filename string, verbose bool) (genres, tags []string, err error)
 	// recMBID, _ := client.SearchRecordingMBID(ctx, "goreshit", "crabs", "tomboyish love for daughter", 0)
 	// TODO: We should normalise these variables somehow. no need to have arrays here..
 	recMBID, _ := client.SearchRecordingMBID(ctx, artist[0], title[0], album[0], 0)
+	recKey := "rec:" + recMBID
+	if e, stale, _ := cache.Get(ctx, recKey, false); e != nil && !stale {
+		fmt.Println("Values read from the cache")
+		return e.Genres, e.Tags, nil
+	}
 
 	//genres, tags, err := client.ReleaseGroupGenres(ctx, "ba03bce9-9f91-42ce-9f12-519dae3f734b")
 	genres, tags, err = client.RecordingGenres(ctx, recMBID)
@@ -472,6 +491,13 @@ func getGenres(filename string, verbose bool) (genres, tags []string, err error)
 
 	// fmt.Println("Genres:", genres)
 	// fmt.Println("Tags:", tags)
+	_ = cache.Put(ctx, recKey, Entry{
+		Source: "recording",
+		MBID:   recMBID,
+		Genres: genres,
+		Tags:   tags,
+		Raw:    json.RawMessage{},
+	})
 
 	// NOTE: This should be in the ADD command..
 	// if !c.Bool("check-only") != true {
